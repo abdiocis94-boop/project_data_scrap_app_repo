@@ -6,7 +6,7 @@ import pandas as pd
 import requests
 from bs4 import BeautifulSoup
 from datetime import datetime
-import plotly.express as px
+#import plotly.express as px
 import plotly.graph_objects as go
 import numpy as np
 import io
@@ -847,4 +847,5 @@ def main():
             4. Revenir sur cette page
             """)
     
+
     # Page d'évaluation
