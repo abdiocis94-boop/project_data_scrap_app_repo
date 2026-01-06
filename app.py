@@ -1,402 +1,326 @@
+# app.py - Application Streamlit pour le scraping de CoinAfrique
+
 import streamlit as st
 import pandas as pd
-import requests
-from bs4 import BeautifulSoup
-from datetime import datetime
-import plotly.express as px
-import plotly.graph_objects as go
-import json
-import time
+from requests import get
+from bs4 import BeautifulSoup as bs 
 import os
+import time
+from datetime import datetime
+import base64
 
-# ============================================
-# CONFIGURATION - VERSION SIMPLIFIÉE
-# ============================================
+# Configuration de la page
 st.set_page_config(
-    page_title="CoinAfrique Scraper Pro",
-    page_icon="👕"
+    page_title="CoinAfrique Scraper",
+    page_icon="🛒",
+    layout="wide"
 )
 
-# Initialisation de session
-if 'df_raw' not in st.session_state:
-    st.session_state.df_raw = None
-if 'df_clean' not in st.session_state:
-    st.session_state.df_clean = None
+# Titre de l'application
+st.title("🛒 CoinAfrique Scraper - Sénégal")
+st.markdown("---")
 
-# ============================================
-# FONCTIONS DE SCRAPING (basées sur votre code)
-# ============================================
-
-def scrape_coin_afrique(url, pages=3):
-    """Fonction de scraping sécurisée"""
-    all_data = []
+# Fonction de scraping
+@st.cache_data(show_spinner=False)
+def scraping(url, stop, progress_bar=None):
+    """
+    Fonction pour scraper les données de CoinAfrique
+    """
+    df = pd.DataFrame()
+    total_pages = stop
     
-    for page_num in range(1, pages + 1):
+    for index_page in range(1, stop+1):
+        # Mise à jour de la barre de progression
+        if progress_bar:
+            progress_bar.progress(index_page / total_pages, 
+                                 text=f"Page {index_page}/{total_pages}")
+        
+        url_page = f'{url}?page={index_page}'
         try:
-            page_url = f"{url}?page={page_num}"
+            res = get(url_page, timeout=10)
+            soup = bs(res.content, 'html.parser')
+            containers = soup.find_all('div', 'col s6 m4 l3')
+            data = []
             
-            headers = {
-                'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36'
-            }
+            for container in containers:
+                try:
+                    type_habit = container.find('p', 'ad__card-description').a.text
+                    prix = container.find('p', 'ad__card-price').a.text.strip('CFA')
+                    adresse = container.find('p', 'ad__card-location').span.text
+                    image = container.find('img', 'ad__card-img')['src']
+                    
+                    dic = {
+                        "type": type_habit, 
+                        "prix": prix,
+                        "adresse": adresse, 
+                        "image": image,
+                        "date_scraping": datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+                    }
+                    data.append(dic)
+                except Exception as e:
+                    continue
             
-            response = requests.get(page_url, headers=headers, timeout=15)
-            
-            if response.status_code == 200:
-                soup = BeautifulSoup(response.content, 'html.parser')
-                articles = soup.find_all('div', class_='col s6 m4 l3')
-                
-                for article in articles:
-                    try:
-                        # Extraction des données
-                        title_elem = article.find('p', class_='ad__card-description')
-                        price_elem = article.find('p', class_='ad__card-price')
-                        loc_elem = article.find('p', class_='ad__card-location')
-                        img_elem = article.find('img', class_='ad__card-img')
-                        
-                        if all([title_elem, price_elem, loc_elem]):
-                            title = title_elem.a.text.strip() if title_elem.a else "Sans titre"
-                            price_text = price_elem.a.text.strip() if price_elem.a else "0 CFA"
-                            
-                            # Nettoyage du prix
-                            price_num = ''.join(filter(str.isdigit, price_text))
-                            price_num = int(price_num) if price_num else 0
-                            
-                            location = loc_elem.span.text.strip() if loc_elem.span else "Non spécifié"
-                            image = img_elem.get('src', '') if img_elem else ''
-                            
-                            all_data.append({
-                                'Titre': title,
-                                'Prix_texte': price_text,
-                                'Prix_numerique': price_num,
-                                'Localisation': location,
-                                'Image': image,
-                                'Page': page_num,
-                                'Date_scraping': datetime.now().strftime("%Y-%m-%d %H:%M:%S")
-                            })
-                    except:
-                        continue
-                
-                time.sleep(1)  # Respect du serveur
-                
-            else:
-                st.warning(f"Page {page_num}: Code {response.status_code}")
+            if data:
+                DF = pd.DataFrame(data)
+                df = pd.concat([df, DF], axis=0).reset_index(drop=True)
                 
         except Exception as e:
-            st.error(f"Erreur page {page_num}: {str(e)[:100]}")
+            st.warning(f"Erreur sur la page {index_page}: {str(e)}")
+            continue
     
-    return pd.DataFrame(all_data) if all_data else pd.DataFrame()
+    return df
 
-# ============================================
-# FONCTIONS DE NETTOYAGE
-# ============================================
+# Fonction pour créer un lien de téléchargement
+def get_csv_download_link(df, filename, text="📥 Télécharger CSV"):
+    """
+    Génère un lien de téléchargement pour un DataFrame
+    """
+    csv = df.to_csv(index=False, encoding='utf-8-sig')
+    b64 = base64.b64encode(csv.encode()).decode()
+    href = f'<a href="data:file/csv;base64,{b64}" download="{filename}" style="\
+        display: inline-block;\
+        padding: 0.5rem 1rem;\
+        background-color: #4CAF50;\
+        color: white;\
+        text-decoration: none;\
+        border-radius: 5px;\
+        font-weight: bold;\
+        margin: 5px;">{text}</a>'
+    return href
 
-def clean_data(df):
-    """Nettoie les données scrapées"""
-    if df.empty:
-        return df
+# Barre latérale pour les paramètres
+with st.sidebar:
+    st.header("⚙️ Paramètres de scraping")
+    st.markdown("---")
     
-    df_clean = df.copy()
+    # Sélection du nombre de pages
+    pages = st.slider("Nombre de pages à scraper", 1, 20, 5, 
+                     help="Plus de pages = plus de données mais temps de traitement plus long")
     
-    # Filtre des prix aberrants
-    df_clean = df_clean[df_clean['Prix_numerique'] > 0]
-    df_clean = df_clean[df_clean['Prix_numerique'] < 10000000]  # < 10 millions CFA
+    # Bouton pour démarrer le scraping
+    start_scraping = st.button("🚀 Lancer le scraping", 
+                              type="primary", 
+                              use_container_width=True)
     
-    # Extraction de la ville
-    df_clean['Ville'] = df_clean['Localisation'].apply(
-        lambda x: x.split(',')[0].strip() if ',' in str(x) else str(x)
+    st.markdown("---")
+    st.info("**Note:** Chaque page contient environ 20-30 annonces.")
+    
+    # Section informations
+    with st.expander("ℹ️ Informations"):
+        st.markdown("""
+        **Catégories disponibles:**
+        1. Vêtements Homme
+        2. Chaussures Homme
+        3. Vêtements Enfants
+        4. Chaussures Enfants
+        
+        **Données collectées:**
+        - Type d'article
+        - Prix (CFA)
+        - Adresse
+        - Image
+        - Date du scraping
+        """)
+
+# Contenu principal
+if start_scraping:
+    # URLs pour le scraping
+    urls = {
+        "Vêtements Homme": 'https://sn.coinafrique.com/categorie/vetements-homme',
+        "Chaussures Homme": 'https://sn.coinafrique.com/categorie/chaussures-homme',
+        "Vêtements Enfants": 'https://sn.coinafrique.com/categorie/vetements-enfants',
+        "Chaussures Enfants": 'https://sn.coinafrique.com/categorie/chaussures-enfants'
+    }
+    
+    # Initialiser les DataFrames
+    dataframes = {}
+    
+    # Conteneur pour la progression
+    progress_container = st.container()
+    
+    with progress_container:
+        st.subheader("📊 Progression du scraping")
+        progress_bar = st.progress(0, text="Préparation...")
+        
+        # Scraping pour chaque catégorie
+        categories = list(urls.keys())
+        for i, category in enumerate(categories):
+            st.write(f"**{category}**...")
+            
+            # Barre de progression pour cette catégorie
+            category_progress = st.progress(0, text=f"Page 1/{pages}")
+            
+            # Scraping
+            df = scraping(urls[category], pages, category_progress)
+            dataframes[category] = df
+            
+            # Supprimer la barre de progression de la catégorie
+            category_progress.empty()
+            
+            # Mise à jour de la barre principale
+            progress_bar.progress((i + 1) / len(categories), 
+                                 text=f"{i + 1}/{len(categories)} catégories terminées")
+        
+        progress_bar.empty()
+        st.success("✅ Scraping terminé avec succès !")
+    
+    # Section des statistiques
+    st.subheader("📈 Statistiques des données collectées")
+    
+    cols = st.columns(4)
+    for idx, (category, df) in enumerate(dataframes.items()):
+        with cols[idx % 4]:
+            st.metric(
+                label=category,
+                value=f"{len(df)} annonces",
+                delta=f"{len(df)//pages} annonces/page" if pages > 0 else "0"
+            )
+    
+    # Section d'affichage des données
+    st.subheader("👁️ Aperçu des données")
+    
+    # Sélecteur de catégorie pour l'aperçu
+    selected_category = st.selectbox(
+        "Choisir une catégorie à afficher:",
+        list(dataframes.keys())
     )
     
-    # Catégorie de prix
-    bins = [0, 5000, 20000, 50000, 200000, float('inf')]
-    labels = ['Très bas', 'Bas', 'Moyen', 'Élevé', 'Très élevé']
-    df_clean['Catégorie_prix'] = pd.cut(df_clean['Prix_numerique'], bins=bins, labels=labels)
-    
-    return df_clean
-
-# ============================================
-# INTERFACE UTILISATEUR
-# ============================================
-
-def main():
-    # Titre principal
-    st.title("👕 CoinAfrique Scraper Pro")
-    st.markdown("---")
-    
-    # Sidebar - Navigation
-    with st.sidebar:
-        st.header("Navigation")
-        page = st.radio(
-            "Choisissez une page :",
-            ["🏠 Accueil", "🔍 Scraper", "📥 Télécharger", "📊 Dashboard", "⭐ Évaluation"]
+    if selected_category in dataframes:
+        df_display = dataframes[selected_category]
+        st.dataframe(
+            df_display.head(10),
+            use_container_width=True,
+            column_config={
+                "image": st.column_config.ImageColumn("Image", width="small"),
+                "prix": st.column_config.NumberColumn("Prix (CFA)", format="%d CFA"),
+                "type": st.column_config.TextColumn("Type d'article", width="medium"),
+                "adresse": st.column_config.TextColumn("Adresse", width="medium"),
+                "date_scraping": st.column_config.DatetimeColumn("Date de scraping")
+            }
         )
         
-        st.markdown("---")
-        st.info("**État des données :**")
-        if st.session_state.df_raw is not None:
-            st.success(f"✅ {len(st.session_state.df_raw)} annonces scrapées")
+        # Afficher quelques images
+        if not df_display.empty and 'image' in df_display.columns:
+            st.subheader("🖼️ Quelques images des annonces")
+            image_urls = df_display['image'].dropna().head(6).tolist()
+            if image_urls:
+                cols = st.columns(3)
+                for idx, img_url in enumerate(image_urls[:6]):
+                    with cols[idx % 3]:
+                        st.image(img_url, caption=f"Annonce {idx+1}", use_column_width=True)
     
-    # ==================== PAGE ACCUEIL ====================
-    if page == "🏠 Accueil":
-        st.header("Bienvenue sur CoinAfrique Scraper")
-        
-        st.markdown("""
-        ### 📋 Fonctionnalités principales :
-        
-        1. **🔍 Scraping intelligent**
-           - Récupération multi-pages
-           - Gestion automatique des erreurs
-           - Respect des délais serveur
-        
-        2. **📥 Export des données**
-           - Format CSV (Excel compatible)
-           - Format JSON
-           - Données brutes et nettoyées
-        
-        3. **📊 Dashboard analytique**
-           - Graphiques interactifs
-           - Statistiques détaillées
-           - Filtres dynamiques
-        
-        4. **⭐ Système d'évaluation**
-           - Feedback utilisateur
-           - Amélioration continue
-        """)
-        
-        # URLs suggérées
-        with st.expander("🔗 URLs de test recommandées"):
-            st.code("""
-            https://sn.coinafrique.com/categorie/telephones
-            https://sn.coinafrique.com/categorie/ordinateurs
-            https://sn.coinafrique.com/categorie/electromenager
-            """)
-        
-        # Vérification des dépendances
-        st.markdown("---")
-        st.subheader("✅ Vérification du système")
-        
-        col1, col2, col3 = st.columns(3)
-        with col1:
-            st.success("Streamlit: OK")
-        with col2:
-            st.success("Pandas: OK")
-        with col3:
-            try:
-                import plotly
-                st.success(f"Plotly: {plotly.__version__}")
-            except:
-                st.error("Plotly: ERREUR")
+    # Section de téléchargement
+    st.subheader("📥 Téléchargement des données")
     
-    # ==================== PAGE SCRAPER ====================
-    elif page == "🔍 Scraper":
-        st.header("🔍 Scraping de données")
-        
-        col1, col2 = st.columns([2, 1])
-        
-        with col1:
-            url = st.text_input(
-                "URL CoinAfrique à scraper :",
-                value="https://sn.coinafrique.com/categorie/telephones",
-                help="Collez l'URL d'une catégorie CoinAfrique"
-            )
-        
-        with col2:
-            pages = st.slider("Nombre de pages :", 1, 5, 2)
-        
-        if st.button("🚀 Lancer le scraping", type="primary", use_container_width=True):
-            with st.spinner(f"Scraping en cours ({pages} pages)..."):
-                df = scrape_coin_afrique(url, pages)
-                
-                if not df.empty:
-                    st.session_state.df_raw = df
-                    st.session_state.df_clean = clean_data(df)
-                    
-                    st.success(f"✅ {len(df)} annonces récupérées avec succès !")
-                    
-                    # Aperçu
-                    st.subheader("👁️ Aperçu des données")
-                    st.dataframe(df.head(10), use_container_width=True)
-                    
-                    # Statistiques rapides
-                    col1, col2, col3 = st.columns(3)
-                    col1.metric("Annonces", len(df))
-                    col2.metric("Prix moyen", f"{df['Prix_numerique'].mean():,.0f} CFA")
-                    col3.metric("Pages", df['Page'].nunique())
-                    
-                else:
-                    st.warning("Aucune donnée n'a pu être récupérée. Essayez une autre URL.")
+    # Créer un dossier data s'il n'existe pas
+    data_dir = "data"
+    if not os.path.exists(data_dir):
+        os.makedirs(data_dir)
     
-    # ==================== PAGE TÉLÉCHARGER ====================
-    elif page == "📥 Télécharger":
-        st.header("📥 Téléchargement des données")
-        
-        if st.session_state.df_raw is not None:
-            df_raw = st.session_state.df_raw
-            df_clean = st.session_state.df_clean
-            
-            tab1, tab2 = st.tabs(["Données brutes", "Données nettoyées"])
-            
-            with tab1:
-                st.subheader(f"Données brutes ({len(df_raw)} annonces)")
-                st.dataframe(df_raw.head(), use_container_width=True)
-                
-                # Téléchargement brut
-                csv_raw = df_raw.to_csv(index=False, encoding='utf-8-sig')
-                st.download_button(
-                    "📥 Télécharger CSV (brut)",
-                    csv_raw,
-                    f"coin_afrique_brut_{datetime.now().strftime('%Y%m%d')}.csv",
-                    "text/csv",
-                    use_container_width=True
-                )
-            
-            with tab2:
-                if df_clean is not None and not df_clean.empty:
-                    st.subheader(f"Données nettoyées ({len(df_clean)} annonces)")
-                    st.dataframe(df_clean.head(), use_container_width=True)
-                    
-                    csv_clean = df_clean.to_csv(index=False, encoding='utf-8-sig')
-                    st.download_button(
-                        "📥 Télécharger CSV (nettoyé)",
-                        csv_clean,
-                        f"coin_afrique_net_{datetime.now().strftime('%Y%m%d')}.csv",
-                        "text/csv",
-                        type="primary",
-                        use_container_width=True
-                    )
-                else:
-                    st.info("Les données nettoyées ne sont pas disponibles.")
-        
-        else:
-            st.warning("Aucune donnée disponible. Veuillez d'abord scraper des données.")
+    # Enregistrer les fichiers CSV
+    st.write("Téléchargez les données complètes au format CSV:")
     
-    # ==================== PAGE DASHBOARD ====================
-    elif page == "📊 Dashboard":
-        st.header("📊 Dashboard analytique")
-        
-        if st.session_state.df_clean is not None and not st.session_state.df_clean.empty:
-            df = st.session_state.df_clean
+    download_cols = st.columns(4)
+    for idx, (category, df) in enumerate(dataframes.items()):
+        with download_cols[idx % 4]:
+            # Générer le nom du fichier
+            filename = f"{category.lower().replace(' ', '_')}.csv"
+            filepath = os.path.join(data_dir, filename)
             
-            # Métriques principales
-            col1, col2, col3, col4 = st.columns(4)
-            col1.metric("Annonces", len(df))
-            col2.metric("Prix moyen", f"{df['Prix_numerique'].mean():,.0f} CFA")
-            col3.metric("Prix min", f"{df['Prix_numerique'].min():,.0f} CFA")
-            col4.metric("Prix max", f"{df['Prix_numerique'].max():,.0f} CFA")
+            # Sauvegarder le fichier
+            df.to_csv(filepath, index=False, encoding='utf-8-sig')
             
-            st.markdown("---")
+            # Créer le lien de téléchargement
+            st.markdown(get_csv_download_link(df, filename, f"📥 {category}"), 
+                       unsafe_allow_html=True)
             
-            # Graphiques
-            tab1, tab2, tab3 = st.tabs(["📈 Distribution", "📍 Localisation", "🏷️ Catégories"])
-            
-            with tab1:
-                # Histogramme des prix
-                fig1 = px.histogram(df, x='Prix_numerique', nbins=20,
-                                  title='Distribution des prix',
-                                  labels={'Prix_numerique': 'Prix (CFA)'})
-                st.plotly_chart(fig1, use_container_width=True)
-            
-            with tab2:
-                if 'Ville' in df.columns:
-                    ville_counts = df['Ville'].value_counts().head(10)
-                    fig2 = px.bar(x=ville_counts.values, y=ville_counts.index,
-                                orientation='h',
-                                title='Top 10 des villes',
-                                labels={'x': 'Nombre d\'annonces', 'y': 'Ville'})
-                    st.plotly_chart(fig2, use_container_width=True)
-            
-            with tab3:
-                if 'Catégorie_prix' in df.columns:
-                    cat_counts = df['Catégorie_prix'].value_counts()
-                    fig3 = px.pie(values=cat_counts.values, names=cat_counts.index,
-                                title='Répartition par catégorie de prix')
-                    st.plotly_chart(fig3, use_container_width=True)
-            
-            # Tableau détaillé
-            st.markdown("---")
-            st.subheader("📋 Données détaillées")
-            st.dataframe(df, use_container_width=True)
-            
-        else:
-            st.info("Scrapez et nettoyez d'abord des données pour afficher le dashboard.")
+            # Afficher des infos supplémentaires
+            st.caption(f"{len(df)} annonces")
     
-    # ==================== PAGE ÉVALUATION ====================
-    elif page == "⭐ Évaluation":
-        st.header("⭐ Évaluez cette application")
-        
-        with st.form("form_evaluation"):
-            st.subheader("Votre expérience")
-            
-            col1, col2 = st.columns(2)
-            with col1:
-                nom = st.text_input("Votre nom (optionnel)")
-                usage = st.selectbox("Fréquence d'utilisation",
-                                   ["Première fois", "Occasionnel", "Régulier"])
-            
-            with col2:
-                email = st.text_input("Email (optionnel)")
-                role = st.selectbox("Votre rôle",
-                                  ["Étudiant", "Professionnel", "Chercheur", "Autre"])
-            
-            st.subheader("Évaluation (1 = Très mauvais, 5 = Excellent)")
-            
-            col1, col2, col3 = st.columns(3)
-            with col1:
-                facilite = st.slider("Facilité d'utilisation", 1, 5, 3)
-                vitesse = st.slider("Vitesse de scraping", 1, 5, 3)
-            
-            with col2:
-                qualite = st.slider("Qualité des données", 1, 5, 3)
-                utilite = st.slider("Utilité du dashboard", 1, 5, 3)
-            
-            with col3:
-                design = st.slider("Design de l'interface", 1, 5, 3)
-                satisfaction = st.slider("Satisfaction globale", 1, 5, 3)
-            
-            st.subheader("Vos commentaires")
-            points_forts = st.text_area("Ce que vous avez aimé")
-            ameliorations = st.text_area("Suggestions d'amélioration")
-            
-            # Soumission
-            if st.form_submit_button("✅ Soumettre l'évaluation", use_container_width=True):
-                # Création du dossier evaluations s'il n'existe pas
-                os.makedirs("evaluations", exist_ok=True)
-                
-                # Données d'évaluation
-                eval_data = {
-                    "date": datetime.now().isoformat(),
-                    "evaluation": {
-                        "facilite": facilite,
-                        "vitesse": vitesse,
-                        "qualite": qualite,
-                        "utilite": utilite,
-                        "design": design,
-                        "satisfaction": satisfaction
-                    },
-                    "commentaires": {
-                        "points_forts": points_forts,
-                        "ameliorations": ameliorations
-                    },
-                    "utilisateur": {
-                        "usage": usage,
-                        "role": role
-                    }
-                }
-                
-                # Sauvegarde
-                filename = f"evaluations/evaluation_{datetime.now().strftime('%Y%m%d_%H%M%S')}.json"
-                with open(filename, 'w', encoding='utf-8') as f:
-                    json.dump(eval_data, f, ensure_ascii=False, indent=2)
-                
-                st.success("✅ Merci pour votre évaluation !")
-                st.balloons()
-    
-    # Pied de page
+    # Option pour télécharger toutes les données en un seul fichier Excel
     st.markdown("---")
-    st.caption("CoinAfrique Scraper Pro v2.0 • Déployé avec Streamlit Cloud")
+    st.subheader("📦 Option avancée")
+    
+    if st.button("📊 Générer un fichier Excel avec toutes les données", 
+                use_container_width=True):
+        with st.spinner("Génération du fichier Excel..."):
+            excel_path = os.path.join(data_dir, "toutes_donnees_coinafrique.xlsx")
+            with pd.ExcelWriter(excel_path, engine='openpyxl') as writer:
+                for category, df in dataframes.items():
+                    # Nettoyer le nom de la feuille
+                    sheet_name = category[:31]  # Excel limite à 31 caractères
+                    df.to_excel(writer, sheet_name=sheet_name, index=False)
+            
+            # Lire le fichier Excel pour le téléchargement
+            with open(excel_path, "rb") as f:
+                excel_data = f.read()
+            
+            b64 = base64.b64encode(excel_data).decode()
+            href = f'<a href="data:application/vnd.openxmlformats-officedocument.spreadsheetml.sheet;base64,{b64}" \
+                    download="toutes_donnees_coinafrique.xlsx" \
+                    style="display: inline-block;\
+                           padding: 0.75rem 1.5rem;\
+                           background-color: #2196F3;\
+                           color: white;\
+                           text-decoration: none;\
+                           border-radius: 5px;\
+                           font-weight: bold;\
+                           font-size: 1.1em;">📊 Télécharger le fichier Excel complet</a>'
+            
+            st.markdown(href, unsafe_allow_html=True)
+            st.success("Fichier Excel généré avec succès !")
 
-# ============================================
-# POINT D'ENTRÉE
-# ============================================
+else:
+    # Page d'accueil
+    st.markdown("""
+    ## 📋 Bienvenue sur CoinAfrique Scraper
+    
+    Cette application vous permet de:
+    
+    1. **Scraper les données** depuis CoinAfrique Sénégal
+    2. **Visualiser les annonces** en temps réel
+    3. **Télécharger les données** au format CSV ou Excel
+    
+    ### 🎯 Catégories disponibles:
+    - 👕 Vêtements pour Hommes
+    - 👞 Chaussures pour Hommes
+    - 👶 Vêtements pour Enfants
+    - 👟 Chaussures pour Enfants
+    
+    ### 🚀 Comment utiliser:
+    1. Configurez le nombre de pages dans la barre latérale
+    2. Cliquez sur "Lancer le scraping"
+    3. Visualisez les données collectées
+    4. Téléchargez les fichiers CSV ou Excel
+    
+    ---
+    
+    **💡 Conseil:** Commencez avec 2-3 pages pour tester, puis augmentez selon vos besoins.
+    """)
+    
+    # Exemple de structure de données
+    with st.expander("👁️ Exemple de données collectées"):
+        example_data = pd.DataFrame({
+            "type": ["Chemise homme", "Baskets Nike", "Robe enfant"],
+            "prix": [5000, 25000, 3500],
+            "adresse": ["Dakar", "Thiès", "Mbour"],
+            "image": [
+                "https://example.com/image1.jpg",
+                "https://example.com/image2.jpg",
+                "https://example.com/image3.jpg"
+            ],
+            "date_scraping": ["2024-01-06 10:30:00"] * 3
+        })
+        st.dataframe(example_data, use_container_width=True)
 
-if __name__ == "__main__":
-    main()
+# Pied de page
+st.markdown("---")
+st.markdown(
+    """
+    <div style='text-align: center; color: gray; font-size: 0.9em;'>
+    Application développée avec ❤️ en utilisant Streamlit | 
+    Données provenant de <a href='https://sn.coinafrique.com' target='_blank'>CoinAfrique Sénégal</a>
+    </div>
+    """,
+    unsafe_allow_html=True
+)
