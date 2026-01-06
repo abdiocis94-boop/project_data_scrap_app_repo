@@ -7,7 +7,7 @@ import requests
 from bs4 import BeautifulSoup
 from datetime import datetime
 #import plotly.express as px
-import plotly.graph_objects as go
+#import plotly.graph_objects as go
 import numpy as np
 import io
 import json
@@ -849,3 +849,4 @@ def main():
     
 
     # Page d'évaluation
+
