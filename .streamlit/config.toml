@@ -1,5 +1,5 @@
-[theme]
-backgroundColor="#9cafc5"
-secondaryBackgroundColor="#baf1ba"
-textColor="#0e0f10"
-font="serif"
+streamlit==1.28.1
+pandas==2.0.3
+requests==2.31.0
+beautifulsoup4==4.12.2
+plotly==5.17.0
